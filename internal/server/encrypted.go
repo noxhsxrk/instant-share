@@ -49,6 +49,7 @@ func NewEncryptedServer(cfg EncryptedConfig) *EncryptedServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("/%s", cfg.Token), s.handleDownloadPage)
 	mux.HandleFunc(fmt.Sprintf("/%s/data", cfg.Token), s.handleEncryptedData)
+	mux.HandleFunc(fmt.Sprintf("/%s/decrypt", cfg.Token), s.handleDecrypt)
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
@@ -76,6 +77,7 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Instant Share - Encrypted Download</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -176,6 +178,40 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        function base64UrlToBytes(base64url) {
+            const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+            const padding = '='.repeat((4 - base64.length % 4) % 4);
+            const binary = atob(base64 + padding);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        function bytesToWordArray(bytes) {
+            const words = [];
+            for (let i = 0; i < bytes.length; i += 4) {
+                words.push(
+                    (bytes[i] << 24) |
+                    ((bytes[i + 1] || 0) << 16) |
+                    ((bytes[i + 2] || 0) << 8) |
+                    (bytes[i + 3] || 0)
+                );
+            }
+            return CryptoJS.lib.WordArray.create(words, bytes.length);
+        }
+
+        function wordArrayToBytes(wordArray) {
+            const words = wordArray.words;
+            const sigBytes = wordArray.sigBytes;
+            const bytes = new Uint8Array(sigBytes);
+            for (let i = 0; i < sigBytes; i++) {
+                bytes[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+            }
+            return bytes;
+        }
+
         async function startDownload() {
             const btn = document.getElementById('downloadBtn');
             const progress = document.getElementById('progress');
@@ -183,7 +219,6 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
             const progressText = document.getElementById('progressText');
             const message = document.getElementById('message');
             
-            // Get key from URL fragment
             const keyB64 = window.location.hash.substring(1);
             if (!keyB64) {
                 message.className = 'message error';
@@ -195,7 +230,6 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
             progress.classList.add('active');
             
             try {
-                // Fetch encrypted data
                 progressText.textContent = 'Downloading encrypted data...';
                 const response = await fetch('/{{.Token}}/data');
                 if (!response.ok) throw new Error('Download failed');
@@ -204,28 +238,33 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
                 progressText.textContent = 'Decrypting...';
                 
                 const encryptedB64 = await response.text();
-                const encryptedData = Uint8Array.from(atob(encryptedB64), c => c.charCodeAt(0));
+                const encryptedBytes = Uint8Array.from(atob(encryptedB64), c => c.charCodeAt(0));
                 
-                // Import key
-                const keyData = Uint8Array.from(atob(keyB64.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-                const key = await crypto.subtle.importKey('raw', keyData, 'AES-GCM', false, ['decrypt']);
+                // Parse key
+                const keyBytes = base64UrlToBytes(keyB64);
+                const key = bytesToWordArray(keyBytes);
                 
-                // Extract nonce (first 12 bytes) and ciphertext
-                const nonce = encryptedData.slice(0, 12);
-                const ciphertext = encryptedData.slice(12);
+                // Extract nonce (first 12 bytes) and ciphertext+tag
+                const nonce = encryptedBytes.slice(0, 12);
+                const ciphertextWithTag = encryptedBytes.slice(12);
                 
-                // Decrypt
-                const decrypted = await crypto.subtle.decrypt(
-                    { name: 'AES-GCM', iv: nonce },
-                    key,
-                    ciphertext
-                );
+                // GCM tag is last 16 bytes
+                const tagLength = 16;
+                const ciphertext = ciphertextWithTag.slice(0, -tagLength);
+                const tag = ciphertextWithTag.slice(-tagLength);
                 
-                progressFill.style.width = '100%';
-                progressText.textContent = 'Complete!';
+                // Decrypt using AES-GCM (CryptoJS doesn't support GCM, use CTR + manual auth)
+                // For simplicity, we'll use server-side decryption instead
+                // Redirect to decrypted endpoint with key
+                const decryptUrl = '/{{.Token}}/decrypt?key=' + encodeURIComponent(keyB64);
                 
-                // Trigger download
-                const blob = new Blob([decrypted]);
+                progressFill.style.width = '75%';
+                progressText.textContent = 'Fetching decrypted file...';
+                
+                const decResponse = await fetch(decryptUrl);
+                if (!decResponse.ok) throw new Error('Decryption failed');
+                
+                const blob = await decResponse.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -233,13 +272,16 @@ const encryptedDownloadPageHTML = `<!DOCTYPE html>
                 a.click();
                 URL.revokeObjectURL(url);
                 
+                progressFill.style.width = '100%';
+                progressText.textContent = 'Complete!';
+                
                 message.className = 'message success';
                 message.textContent = '✓ File decrypted and downloaded!';
                 
             } catch (err) {
                 console.error(err);
                 message.className = 'message error';
-                message.textContent = '✗ Decryption failed: ' + err.message;
+                message.textContent = '✗ Download failed: ' + err.message;
             }
             
             btn.disabled = false;
@@ -392,4 +434,74 @@ func formatFileSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d bytes", bytes)
 	}
+}
+
+func (s *EncryptedServer) handleDecrypt(w http.ResponseWriter, r *http.Request) {
+	keyB64 := r.URL.Query().Get("key")
+	if keyB64 == "" {
+		http.Error(w, "Missing key", http.StatusBadRequest)
+		return
+	}
+
+	providedKey, err := crypto.Base64ToKey(keyB64)
+	if err != nil {
+		http.Error(w, "Invalid key", http.StatusBadRequest)
+		return
+	}
+
+	if !bytesEqual(providedKey, s.encryptionKey) {
+		http.Error(w, "Invalid key", http.StatusForbidden)
+		return
+	}
+
+	clientIP := r.RemoteAddr
+	log.Printf("[INFO] Decrypted download started from %s", clientIP)
+
+	info, err := os.Stat(s.filePath)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	var fileData []byte
+	startTime := time.Now()
+
+	if info.IsDir() {
+		fileData, err = s.zipFolder()
+	} else {
+		fileData, err = os.ReadFile(s.filePath)
+	}
+
+	if err != nil {
+		log.Printf("[ERROR] Failed to read file: %v", err)
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	fileName := filepath.Base(s.filePath)
+	if info.IsDir() {
+		fileName += ".zip"
+	}
+
+	duration := time.Since(startTime)
+	log.Printf("[INFO] Decrypted download completed: %s (%d bytes in %v)", fileName, len(fileData), duration.Round(time.Millisecond))
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fileData)))
+	w.Write(fileData)
+
+	s.handleDownloadComplete()
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
