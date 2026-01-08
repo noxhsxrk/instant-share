@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/saharat-wae/instant-share/internal/crypto"
 	"github.com/saharat-wae/instant-share/internal/network"
 	"github.com/saharat-wae/instant-share/internal/qr"
 	"github.com/saharat-wae/instant-share/internal/server"
@@ -21,6 +22,7 @@ var (
 	port        int
 	receiveMode bool
 	oneShot     bool
+	noEncrypt   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -54,6 +56,7 @@ func init() {
 	rootCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
 	rootCmd.Flags().BoolVarP(&receiveMode, "receive", "r", false, "Enable receive mode (accept file uploads)")
 	rootCmd.Flags().BoolVar(&oneShot, "one-shot", false, "Auto-close after first download")
+	rootCmd.Flags().BoolVar(&noEncrypt, "no-encrypt", false, "Disable end-to-end encryption")
 
 	clipCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
 	pasteCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
@@ -108,6 +111,74 @@ func runSendMode(filePath string, localIP string, port int, tok string) {
 		sizeStr = formatSize(info.Size())
 	}
 
+	if noEncrypt {
+		runUnencryptedSendMode(absPath, sizeStr, localIP, port, tok)
+	} else {
+		runEncryptedSendMode(absPath, sizeStr, localIP, port, tok)
+	}
+}
+
+func runEncryptedSendMode(absPath, sizeStr, localIP string, port int, tok string) {
+	encKey, err := crypto.GenerateKey()
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to generate encryption key: %v", err)
+	}
+
+	keyB64 := crypto.KeyToBase64(encKey)
+	url := fmt.Sprintf("http://%s:%d/%s#%s", localIP, port, tok, keyB64)
+
+	fmt.Printf("\n[INFO] Preparing to share '%s' (%s)\n", filepath.Base(absPath), sizeStr)
+	fmt.Println("[INFO] 🔐 End-to-end encryption enabled")
+	fmt.Printf("[INFO] Server started at http://%s:%d/%s\n\n", localIP, port, tok)
+
+	qrCode, err := qr.GenerateASCIICompact(url)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to generate QR code: %v", err)
+	}
+	fmt.Println(qrCode)
+
+	fmt.Println("Scan this QR code to download (encrypted).")
+	if oneShot {
+		fmt.Println("Server will stop after the first download.")
+	}
+	fmt.Println("Press Ctrl+C to stop.")
+	fmt.Println()
+
+	srv := server.NewEncryptedServer(server.EncryptedConfig{
+		Port:          port,
+		FilePath:      absPath,
+		Token:         tok,
+		EncryptionKey: encKey,
+		OneShot:       oneShot,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+			log.Printf("[ERROR] Server error: %v", err)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("\n[INFO] Shutting down...")
+	case <-srv.Done():
+		fmt.Println("\n[INFO] Download completed, shutting down...")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[ERROR] Shutdown error: %v", err)
+	}
+
+	fmt.Println("[INFO] Server stopped.")
+}
+
+func runUnencryptedSendMode(absPath, sizeStr, localIP string, port int, tok string) {
 	url := fmt.Sprintf("http://%s:%d/%s", localIP, port, tok)
 
 	fmt.Printf("\n[INFO] Preparing to share '%s' (%s)\n", filepath.Base(absPath), sizeStr)

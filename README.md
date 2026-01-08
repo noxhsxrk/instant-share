@@ -10,6 +10,7 @@
 - **Folder Support** - Auto-zips folders on-the-fly
 - **Receive Mode** - Accept files from other devices
 - **Clipboard Bridge** - Share text between Mac and mobile devices
+- **E2E Encryption** - AES-256-GCM encryption, decrypted only in browser
 - **Secure** - Random token in URL prevents guessing
 - **One-Shot** - Auto-close after first download
 
@@ -74,7 +75,7 @@ Opens a text input form. Mobile types/pastes text, it goes to Mac clipboard.
 
 ### Options
 
-```
+```text
 Commands:
   clip        Share clipboard text to mobile (push mode)
   paste       Receive text from mobile to clipboard (pull mode)
@@ -83,6 +84,7 @@ Flags:
   -p, --port int   Port to serve on (default 8080)
   -r, --receive    Enable receive mode (accept file uploads)
       --one-shot   Auto-close after first download
+      --no-encrypt Disable end-to-end encryption
   -h, --help       Help for share
 ```
 
