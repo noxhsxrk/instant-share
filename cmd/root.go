@@ -32,6 +32,18 @@ Simply run 'share <file>' and scan the QR code from any device to download.`,
 	Run:  runShare,
 }
 
+var clipCmd = &cobra.Command{
+	Use:   "clip",
+	Short: "Share clipboard text to mobile (push mode)",
+	Run:   runClipMode,
+}
+
+var pasteCmd = &cobra.Command{
+	Use:   "paste",
+	Short: "Receive text from mobile to clipboard (pull mode)",
+	Run:   runPasteMode,
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -42,6 +54,12 @@ func init() {
 	rootCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
 	rootCmd.Flags().BoolVarP(&receiveMode, "receive", "r", false, "Enable receive mode (accept file uploads)")
 	rootCmd.Flags().BoolVar(&oneShot, "one-shot", false, "Auto-close after first download")
+
+	clipCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
+	pasteCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to serve on")
+
+	rootCmd.AddCommand(clipCmd)
+	rootCmd.AddCommand(pasteCmd)
 }
 
 func runShare(cmd *cobra.Command, args []string) {
@@ -64,6 +82,8 @@ func runShare(cmd *cobra.Command, args []string) {
 			fmt.Println("Error: Please specify a file or folder to share")
 			fmt.Println("Usage: share <file or folder>")
 			fmt.Println("       share --receive")
+			fmt.Println("       share clip")
+			fmt.Println("       share paste")
 			os.Exit(1)
 		}
 		runSendMode(args[0], localIP, availablePort, tok)
@@ -166,6 +186,129 @@ func runReceiveMode(localIP string, port int, tok string) {
 		Port:    port,
 		SaveDir: cwd,
 		Token:   tok,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+			log.Printf("[ERROR] Server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	fmt.Println("\n[INFO] Shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[ERROR] Shutdown error: %v", err)
+	}
+
+	fmt.Println("[INFO] Server stopped.")
+}
+
+func runClipMode(cmd *cobra.Command, args []string) {
+	localIP, err := network.GetLocalIP()
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to get local IP: %v", err)
+	}
+
+	availablePort, err := network.GetAvailablePort(port)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to get available port: %v", err)
+	}
+
+	tok := token.Generate()
+
+	content, err := server.GetMacClipboard()
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to read clipboard: %v", err)
+	}
+
+	if content == "" {
+		log.Fatalf("[ERROR] Clipboard is empty")
+	}
+
+	url := fmt.Sprintf("http://%s:%d/%s", localIP, availablePort, tok)
+
+	fmt.Println("\n[INFO] Clipboard Share Mode (Push)")
+	fmt.Printf("[INFO] Sharing %d characters\n", len(content))
+	fmt.Printf("[INFO] Page: %s\n\n", url)
+
+	qrCode, err := qr.GenerateASCIICompact(url)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to generate QR code: %v", err)
+	}
+	fmt.Println(qrCode)
+
+	fmt.Println("Scan to copy text to your device.")
+	fmt.Println("Press Ctrl+C to stop.")
+	fmt.Println()
+
+	srv := server.NewClipboardServer(server.ClipboardConfig{
+		Port:    availablePort,
+		Token:   tok,
+		Mode:    "clip",
+		Content: content,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+			log.Printf("[ERROR] Server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	fmt.Println("\n[INFO] Shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[ERROR] Shutdown error: %v", err)
+	}
+
+	fmt.Println("[INFO] Server stopped.")
+}
+
+func runPasteMode(cmd *cobra.Command, args []string) {
+	localIP, err := network.GetLocalIP()
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to get local IP: %v", err)
+	}
+
+	availablePort, err := network.GetAvailablePort(port)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to get available port: %v", err)
+	}
+
+	tok := token.Generate()
+	url := fmt.Sprintf("http://%s:%d/%s", localIP, availablePort, tok)
+
+	fmt.Println("\n[INFO] Clipboard Receive Mode (Pull)")
+	fmt.Printf("[INFO] Page: %s\n\n", url)
+
+	qrCode, err := qr.GenerateASCIICompact(url)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to generate QR code: %v", err)
+	}
+	fmt.Println(qrCode)
+
+	fmt.Println("Scan to send text to Mac clipboard.")
+	fmt.Println("Waiting for text...")
+	fmt.Println("Press Ctrl+C to stop.")
+	fmt.Println()
+
+	srv := server.NewClipboardServer(server.ClipboardConfig{
+		Port:  availablePort,
+		Token: tok,
+		Mode:  "paste",
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

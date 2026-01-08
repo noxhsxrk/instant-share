@@ -9,6 +9,7 @@
 - **Universal** - Works with any device with a browser (Android, iOS, Windows, etc.)
 - **Folder Support** - Auto-zips folders on-the-fly
 - **Receive Mode** - Accept files from other devices
+- **Clipboard Bridge** - Share text between Mac and mobile devices
 - **Secure** - Random token in URL prevents guessing
 - **One-Shot** - Auto-close after first download
 
@@ -53,9 +54,31 @@ share --receive
 
 Opens a web upload form for receiving files from other devices.
 
+### Clipboard Bridge
+
+**Push (Send text to mobile):**
+
+```bash
+share clip
+```
+
+Shares your Mac clipboard content. Mobile scans QR and taps "Copy".
+
+**Pull (Receive text from mobile):**
+
+```bash
+share paste
+```
+
+Opens a text input form. Mobile types/pastes text, it goes to Mac clipboard.
+
 ### Options
 
 ```
+Commands:
+  clip        Share clipboard text to mobile (push mode)
+  paste       Receive text from mobile to clipboard (pull mode)
+
 Flags:
   -p, --port int   Port to serve on (default 8080)
   -r, --receive    Enable receive mode (accept file uploads)
