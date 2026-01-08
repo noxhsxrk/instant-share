@@ -18,7 +18,7 @@
 
 ```bash
 # Clone and build
-git clone https://github.com/saharat-wae/instant-share.git
+git clone https://github.com/noxhsxrk/instant-share.git
 cd instant-share
 go build -o share .
 
